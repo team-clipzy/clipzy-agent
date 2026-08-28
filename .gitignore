@@ -216,3 +216,40 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# =============================================
+# CLIPZY Agent - Project Specific
+# =============================================
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# LangChain / AI
+.langchain/
+langchain.db
+
+# Qdrant Local Storage
+qdrant_storage/
+
+# Local Data
+data/
+logs/
+
+# Environment Variables 
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# API Keys backup files
+*_key.txt
+*_secret.txt
