@@ -1,6 +1,6 @@
 """
 YouTube Data API 서비스
-영상 검색, 메타데이터 조회, 채널 정보 등을 담당합니다.
+공식 YouTube Search API를 사용해 실시간 영상 검색을 담당합니다.
 """
 
 from typing import Any
@@ -28,16 +28,16 @@ class YouTubeService:
         query: str,
         max_results: int = 10,
         language: str = "en",
-        video_duration: str = "medium",  # short(<4min), medium(4-20min), long(>20min)
+        video_duration: str = "medium",
     ) -> list[dict[str, Any]]:
         """
-        키워드로 YouTube 영상 검색
+        키워드로 YouTube 영상 검색 (실시간)
 
         Args:
             query: 검색 키워드
             max_results: 반환할 결과 수 (최대 50)
             language: 자막 언어 필터 (en, ko 등)
-            video_duration: 영상 길이 필터
+            video_duration: 영상 길이 (short/medium/long/any)
 
         Returns:
             영상 정보 리스트
@@ -51,6 +51,7 @@ class YouTubeService:
                 relevanceLanguage=language,
                 videoDuration=video_duration,
                 videoCaption="closedCaption",  # 자막 있는 영상만
+                safeSearch="moderate",
             )
             response = request.execute()
 
@@ -67,7 +68,7 @@ class YouTubeService:
                 for item in response.get("items", [])
             ]
 
-            logger.info(f"🔍 검색 완료: query='{query}', results={len(videos)}")
+            logger.info(f"🔍 YouTube 검색 완료: query='{query}', results={len(videos)}")
             return videos
 
         except HttpError as e:
@@ -76,13 +77,13 @@ class YouTubeService:
 
     def get_video_details(self, video_id: str) -> dict[str, Any] | None:
         """
-        영상 상세 정보 조회
+        영상 상세 정보 조회 (실시간, 저장 X)
 
         Args:
-            video_id: YouTube 영상 ID (예: "dQw4w9WgXcQ")
+            video_id: YouTube 영상 ID
 
         Returns:
-            영상 상세 정보 or None (영상 없음)
+            영상 상세 정보 or None
         """
         try:
             request = self.client.videos().list(
@@ -105,62 +106,15 @@ class YouTubeService:
                 "channel_name": item["snippet"]["channelTitle"],
                 "thumbnail_url": item["snippet"]["thumbnails"]["high"]["url"],
                 "published_at": item["snippet"]["publishedAt"],
-                "duration": item["contentDetails"]["duration"],  # ISO 8601 (예: PT4M13S)
+                "duration": item["contentDetails"]["duration"],
                 "view_count": int(item["statistics"].get("viewCount", 0)),
                 "like_count": int(item["statistics"].get("likeCount", 0)),
                 "tags": item["snippet"].get("tags", []),
                 "default_language": item["snippet"].get("defaultLanguage"),
-                "default_audio_language": item["snippet"].get("defaultAudioLanguage"),
             }
 
         except HttpError as e:
             logger.error(f"❌ 영상 조회 실패: video_id={video_id}, error={e}")
-            raise
-
-    def get_channel_videos(
-        self,
-        channel_id: str,
-        max_results: int = 20,
-    ) -> list[dict[str, Any]]:
-        """
-        특정 채널의 최신 영상 목록 조회
-
-        Args:
-            channel_id: YouTube 채널 ID
-            max_results: 반환할 결과 수
-
-        Returns:
-            영상 정보 리스트
-        """
-        try:
-            request = self.client.search().list(
-                part="snippet",
-                channelId=channel_id,
-                type="video",
-                order="date",  # 최신순
-                maxResults=max_results,
-            )
-            response = request.execute()
-
-            videos = [
-                {
-                    "video_id": item["id"]["videoId"],
-                    "title": item["snippet"]["title"],
-                    "channel_name": item["snippet"]["channelTitle"],
-                    "thumbnail_url": item["snippet"]["thumbnails"]["high"]["url"],
-                    "published_at": item["snippet"]["publishedAt"],
-                }
-                for item in response.get("items", [])
-            ]
-
-            logger.info(
-                f"📺 채널 영상 조회 완료: channel_id={channel_id}, "
-                f"results={len(videos)}"
-            )
-            return videos
-
-        except HttpError as e:
-            logger.error(f"❌ 채널 영상 조회 실패: {e}")
             raise
 
 
