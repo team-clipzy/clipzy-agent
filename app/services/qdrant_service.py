@@ -1,6 +1,6 @@
 """
 Qdrant Vector DB 서비스
-영상 임베딩과 사용자 임베딩을 관리합니다.
+사용자 프로필 임베딩을 관리합니다.
 """
 
 import uuid
@@ -87,7 +87,7 @@ class QdrantService:
         Args:
             collection_name: 컬렉션 이름
             embedding: 임베딩 벡터
-            payload: 저장할 메타데이터 (텍스트, 카테고리 등)
+            payload: 저장할 메타데이터
             point_id: 포인트 ID (없으면 UUID 자동 생성)
 
         Returns:
@@ -118,7 +118,7 @@ class QdrantService:
         payloads: list[dict[str, Any]],
         ids: list[str | int] | None = None,
     ) -> list[str]:
-        """여러 벡터를 배치로 저장 (성능 향상)"""
+        """여러 벡터를 배치로 저장"""
         if len(embeddings) != len(payloads):
             raise ValueError("embeddings와 payloads 개수가 다릅니다")
 
@@ -156,7 +156,7 @@ class QdrantService:
             filter_condition: Qdrant 필터 조건 (선택)
 
         Returns:
-            검색 결과 리스트 [{"id", "score", "payload"}, ...]
+            검색 결과 리스트
         """
         results = self.client.search(
             collection_name=collection_name,
@@ -167,7 +167,7 @@ class QdrantService:
 
         logger.info(
             f"🔍 검색 완료: collection={collection_name}, "
-            f"query_dim={len(query_vector)}, results={len(results)}"
+            f"results={len(results)}"
         )
 
         return [
