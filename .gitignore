@@ -253,3 +253,6 @@ logs/
 # API Keys backup files
 *_key.txt
 *_secret.txt
+
+# Redis 로컬 데이터
+redis_data/
