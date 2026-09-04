@@ -82,11 +82,12 @@ class Settings(BaseSettings):
     # =============================================
     redis_host: str = Field(default="localhost")
     redis_port: int = Field(default=6379)
+    redis_db: int = Field(default=0)
 
     @property
     def redis_url(self) -> str:
         """Redis 연결 URL"""
-        return f"redis://{self.redis_host}:{self.redis_port}/0"
+        return f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}"
 
     # =============================================
     # JWT

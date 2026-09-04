@@ -5,7 +5,7 @@ API v1 라우터 통합
 
 from fastapi import APIRouter
 
-from app.api.v1 import health, query, user_profile
+from app.api.v1 import discovery, health, query, user_profile
 
 # v1 통합 라우터
 api_router = APIRouter(prefix="/api/v1")
@@ -14,6 +14,7 @@ api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(health.router)
 api_router.include_router(user_profile.router)
 api_router.include_router(query.router)
+api_router.include_router(discovery.router)
 
 # TODO: 추천 시스템 라우터 추가 예정
 # api_router.include_router(recommendation.router)
