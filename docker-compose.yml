@@ -1,13 +1,16 @@
 version: '3.8'
 
 services:
+  # =============================================
+  # Qdrant - Vector DB
+  # =============================================
   qdrant:
     image: qdrant/qdrant:v1.12.4
     container_name: clipzy-qdrant
     restart: unless-stopped
     ports:
       - "6333:6333"  # HTTP API
-      - "6334:6334"  # gRPC (선택)
+      - "6334:6334"  # gRPC
     volumes:
       - ./qdrant_storage:/qdrant/storage
     environment:
@@ -18,12 +21,30 @@ services:
       timeout: 10s
       retries: 3
 
-  # 나중에 Redis도 추가 예정
-  # redis:
-  #   image: redis:7-alpine
-  #   container_name: clipzy-redis
-  #   restart: unless-stopped
-  #   ports:
-  #     - "6379:6379"
-  #   volumes:
-  #     - ./redis_data:/data
+  # =============================================
+  # Redis - Cache Layer
+  # =============================================
+  # 역할:
+  # - YouTube 검색 결과 24시간 캐싱
+  # - LLM 응답 캐싱 (선택)
+  # - 30일 룰 자동 준수 (TTL 관리)
+  redis:
+    image: redis:7-alpine
+    container_name: clipzy-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./redis_data:/data 
+    # 메모리 제한 (개발 환경)
+    # 프로덕션에서는 더 크게 설정
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
