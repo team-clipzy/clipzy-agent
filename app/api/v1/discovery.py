@@ -437,4 +437,155 @@ async def recommend_videos(request: RecommendRequest) -> RecommendResponse:
     except Exception as e:
         logger.error(f"❌ Recommend 실패: user_id={request.user_id}, error={e}")
         raise HTTPException(status_code=500, detail=str(e))
-            
+
+# ============================================================================
+# v2: LangGraph 기반 Agent API (Phase 6)
+# ============================================================================
+
+from app.agents.discovery.graph import get_discovery_agent
+from app.agents.discovery.state import create_initial_state
+
+
+@router.post(
+    "/recommend-v2",
+    response_model=RecommendResponse,
+    summary="사용자 맞춤 Top 6 영상 추천 (LangGraph Agent)",
+)
+async def recommend_videos_v2(request: RecommendRequest) -> RecommendResponse:
+    """
+    LangGraph 기반 완전한 AI Agent 추천 시스템
+
+    **v1과의 차이:**
+    - v1: 순차 함수 호출
+    - v2: LangGraph StateGraph 워크플로우
+
+    **v2의 특별한 기능:**
+    - ✅ Self-Reflection: 추천 품질 자체 검증
+    - ✅ 자동 재시도: 품질 낮으면 재생성 (최대 2회)
+    - ✅ 상태 추적: 각 노드 실행 기록
+    - ✅ 에러 격리: 실패한 노드만 재실행
+
+    **처리 흐름:**
+    ```
+    START
+      ↓
+    profile_loader → query_generator ↩─┐
+      ↓                                 │
+    candidate_finder → reranker         │
+      ↓                                 │
+    quality_check ──────────────────────┤
+      ↓ (통과)                          │ (재시도)
+    END                                 │
+    ```
+
+    **품질 검증 기준:**
+    1. 개수 (정확히 6개)
+    2. 채널 다양성 (최소 3개 이상)
+    3. 취약점 반영
+    4. Reason 품질 (한국어, 최소 길이)
+
+    **재시도 조건:**
+    - 품질 점수 < 0.7
+    - 재시도 횟수 < 2
+
+    **응답:**
+    - 기존 v1과 동일한 스키마
+    - 추가 메타 정보 (품질 점수, 실행 노드 히스토리)
+    """
+    import time
+    start_time = time.time()
+
+    try:
+        logger.info(f"🚀 Discovery Agent v2 시작: user_id={request.user_id}")
+
+        # ─────────────────────────────────────────────────────────
+        # 초기 상태 생성
+        # ─────────────────────────────────────────────────────────
+        initial_state = create_initial_state(
+            user_id=request.user_id,
+            max_videos_per_query=request.max_videos_per_query,
+            force_refresh=request.force_refresh,
+        )
+
+        # ─────────────────────────────────────────────────────────
+        # Agent 실행
+        # ─────────────────────────────────────────────────────────
+        # LangGraph가 자동으로:
+        # 1. 노드들을 순서대로 실행
+        # 2. 조건부 분기 처리
+        # 3. 재시도 관리
+        # 4. 상태 업데이트
+        
+        agent = get_discovery_agent()
+        final_state = await agent.ainvoke(initial_state)
+
+        # ─────────────────────────────────────────────────────────
+        # 결과 로깅 (디버깅용)
+        # ─────────────────────────────────────────────────────────
+        logger.info(
+            f"🎉 Agent v2 완료: "
+            f"품질={final_state['quality_score']:.2f}, "
+            f"재시도={final_state['retry_count']}회, "
+            f"실행 노드={' → '.join(final_state['node_history'])}"
+        )
+
+        # ─────────────────────────────────────────────────────────
+        # 응답 조립
+        # ─────────────────────────────────────────────────────────
+        recommendations = [
+            RecommendedVideo(**rec) 
+            for rec in final_state["recommendations"]
+        ]
+
+        processing_time_ms = int((time.time() - start_time) * 1000)
+        total_tokens = (
+            final_state["tokens_used_query"] + 
+            final_state["tokens_used_rerank"]
+        )
+        total_cost = (total_tokens / 1_000_000) * 0.30
+
+        return RecommendResponse(
+            user_id=request.user_id,
+            recommendations=recommendations,
+            overall_strategy=final_state["overall_strategy"],
+            generated_queries=final_state["queries"],
+            total_candidates=len(final_state["candidates"]),
+            cache_hits=final_state["cache_hits"],
+            cache_misses=final_state["cache_misses"],
+            processing_time_ms=processing_time_ms,
+            tokens_used_query=final_state["tokens_used_query"],
+            tokens_used_rerank=final_state["tokens_used_rerank"],
+            total_cost_usd=total_cost,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Agent v2 실패: user_id={request.user_id}, error={e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
+    "/agent/graph",
+    summary="Agent 워크플로우 시각화 (개발용)",
+)
+async def visualize_agent_graph() -> dict:
+    """
+    Discovery Agent의 워크플로우를 Mermaid 다이어그램으로 반환
+    
+    ⚠️ 개발/디버깅용
+    """
+    try:
+        agent = get_discovery_agent()
+        
+        # LangGraph의 시각화 기능
+        mermaid = agent.get_graph().draw_mermaid()
+        
+        return {
+            "status": "success",
+            "mermaid_diagram": mermaid,
+            "description": "Mermaid Live Editor(https://mermaid.live)에 붙여넣으면 시각화 가능",
+        }
+    except Exception as e:
+        logger.error(f"❌ 그래프 시각화 실패: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
