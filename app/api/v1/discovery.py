@@ -232,3 +232,209 @@ async def clear_search_cache() -> dict:
         "deleted_keys": deleted,
         "message": f"{deleted}개의 캐시 키가 삭제되었습니다",
     }
+    
+# ============================================================================
+# 최종 추천 API (Re-ranker 포함)
+# ============================================================================
+
+from app.agents.discovery.reranker import get_reranker
+from app.schemas.recommendation import (
+    RecommendedVideo,
+    RecommendRequest,
+    RecommendResponse,
+)
+
+
+@router.post(
+    "/recommend",
+    response_model=RecommendResponse,
+    summary="사용자 맞춤 Top 6 영상 추천 (완전한 Agent)",
+)
+async def recommend_videos(request: RecommendRequest) -> RecommendResponse:
+    """
+    사용자에게 맞춤 Top 6 YouTube 영상 추천 (완전한 AI Agent)
+
+    **처리 흐름:**
+    ```
+    1. 사용자 프로필 로드 (Qdrant)
+    2. LLM 검색어 5개 생성 (gpt-4o-mini)
+    3. YouTube 병렬 검색 + Redis 캐싱 (47개 후보)
+    4. LLM Re-ranker로 Top 6 선정 + 한국어 이유 생성
+    5. 최종 응답 반환
+    ```
+
+    **결과:**
+    - 6개 개인화 추천 영상
+    - 각 영상마다 한국어 추천 이유
+    - 전체 추천 전략 설명
+
+    **성능:**
+    - 캐시 미스: 6-8초
+    - 캐시 히트: 3-4초
+
+    **비용:**
+    - LLM Query Gen: ~\$0.0002
+    - LLM Re-ranker: ~\$0.001
+    - 총: 약 $0.0012 (0.15원)
+
+    **활용 예시 (프론트엔드):**
+    - 완주 영상 없음: 6개 다 표시
+    - 완주 영상 있음: 5개만 사용 (마스터리 배지 자리 확보)
+    """
+    import time
+    start_time = time.time()
+
+    try:
+        # =====================================================================
+        # Step 1: 사용자 프로필 로드
+        # =====================================================================
+        
+        logger.info(f"🎯 Recommend 요청 시작: user_id={request.user_id}")
+
+        profile_service = get_user_profile_service()
+        profile = profile_service.get_profile(request.user_id)
+
+        if profile is None:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"사용자 프로필을 찾을 수 없습니다: user_id={request.user_id}. "
+                    f"먼저 POST /api/v1/user-profile/build로 프로필을 생성해주세요."
+                ),
+            )
+
+        profile_text = profile["profile_text"]
+        metadata = profile["metadata"]
+
+        # =====================================================================
+        # Step 2: LLM 검색어 생성
+        # =====================================================================
+        
+        query_generator = get_query_generator()
+        generated, tokens_query = await query_generator.generate(
+            profile_text=profile_text,
+            learning_goal=metadata.get("learning_goal", "TRAVEL"),
+            absolute_level=metadata.get("absolute_level", "BEGINNER"),
+            num_collected_words=metadata.get("num_collected_words", 0),
+            num_weaknesses=metadata.get("num_weaknesses", 0),
+            num_completed_videos=metadata.get("num_completed_videos", 0),
+        )
+
+        logger.info(f"✅ 검색어 생성 완료: queries={len(generated.queries)}")
+
+        # =====================================================================
+        # Step 3: YouTube 병렬 검색 (Redis 캐싱)
+        # =====================================================================
+        
+        finder = get_candidate_finder()
+        search_result = await finder.find_candidates(
+            queries=generated.queries,
+            max_results_per_query=request.max_videos_per_query,
+            force_refresh=request.force_refresh,
+        )
+
+        candidates = search_result["videos"]
+        logger.info(f"✅ 후보 확보: {len(candidates)}개")
+
+        # 후보가 6개 미만이면 에러
+        if len(candidates) < 6:
+            raise HTTPException(
+                status_code=500,
+                detail=f"후보 영상이 부족합니다 ({len(candidates)}개). YouTube API 상태를 확인해주세요.",
+            )
+
+        # =====================================================================
+        # Step 4: LLM Re-ranker
+        # =====================================================================
+        # 
+        # 47개 후보 → Top 6 선정
+        # 각 영상마다 한국어 추천 이유 생성
+        
+        # 메타데이터에서 상세 정보 추출
+        # (Qdrant에는 요약된 count만 저장되어 있음)
+        # TODO: 프로덕션에서는 Spring DB에서 상세 정보 조회
+        # 지금은 프로필 텍스트만 사용
+        
+        reranker = get_reranker()
+        rerank_result, tokens_rerank = await reranker.rerank(
+            profile_text=profile_text,
+            learning_goal=metadata.get("learning_goal", "TRAVEL"),
+            absolute_level=metadata.get("absolute_level", "BEGINNER"),
+            weaknesses=[],       # TODO: Spring에서 조회
+            weak_words=[],       # TODO: Spring에서 조회
+            collected_words=[],  # TODO: Spring에서 조회
+            candidates=candidates,
+        )
+
+        logger.info(f"✅ Re-rank 완료: top_6 선정")
+
+        # =====================================================================
+        # Step 5: 응답 조립
+        # =====================================================================
+        # 
+        # LLM이 선정한 video_id를 실제 영상 정보와 매칭
+        # 후보 리스트에서 찾아서 완전한 정보 구성
+        
+        # video_id로 빠른 조회를 위한 딕셔너리
+        candidates_by_id = {c["video_id"]: c for c in candidates}
+        
+        recommendations = []
+        for ranked in rerank_result.recommendations:
+            candidate = candidates_by_id.get(ranked.video_id)
+            if not candidate:
+                logger.warning(f"⚠️ 매칭 실패: {ranked.video_id}")
+                continue
+            
+            recommendations.append(RecommendedVideo(
+                rank=ranked.rank,
+                reason=ranked.reason,
+                video_id=candidate["video_id"],
+                title=candidate["title"],
+                description=candidate["description"][:200],  # 200자 제한
+                channel_id=candidate["channel_id"],
+                channel_name=candidate["channel_name"],
+                thumbnail_url=candidate["thumbnail_url"],
+                published_at=candidate["published_at"],
+                matched_query=candidate.get("matched_query", ""),
+            ))
+
+        # 순위별 정렬 (안전장치)
+        recommendations.sort(key=lambda x: x.rank)
+
+        # =====================================================================
+        # 최종 응답
+        # =====================================================================
+        
+        processing_time_ms = int((time.time() - start_time) * 1000)
+        
+        # 비용 계산
+        total_tokens = tokens_query + tokens_rerank
+        total_cost = (total_tokens / 1_000_000) * 0.30  # gpt-4o-mini 평균
+
+        logger.info(
+            f"🎉 Recommend 완료: user_id={request.user_id}, "
+            f"top={len(recommendations)}, "
+            f"time={processing_time_ms}ms, "
+            f"cost=${total_cost:.6f}"
+        )
+
+        return RecommendResponse(
+            user_id=request.user_id,
+            recommendations=recommendations,
+            overall_strategy=rerank_result.overall_strategy,
+            generated_queries=generated.queries,
+            total_candidates=len(candidates),
+            cache_hits=search_result["cache_hits"],
+            cache_misses=search_result["cache_misses"],
+            processing_time_ms=processing_time_ms,
+            tokens_used_query=tokens_query,
+            tokens_used_rerank=tokens_rerank,
+            total_cost_usd=total_cost,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Recommend 실패: user_id={request.user_id}, error={e}")
+        raise HTTPException(status_code=500, detail=str(e))
+            
