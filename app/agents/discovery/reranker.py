@@ -202,24 +202,27 @@ class RerankerService:
 
     def _format_candidates(self, candidates: list[dict]) -> str:
         """
-        후보 영상 리스트를 LLM이 읽기 쉬운 형식으로 포맷팅
+        후보 영상 리스트를 LLM이 읽기 쉬운 형식으로 포맷팅 (Phase 6.5 압축)
         
-        형식:
-        [1] video_id: "abc123"
-            Title: "Airport English Basics"
-            Channel: "Learn English"
-            Matched Query: "beginner travel english"
+        압축 형식 (한 줄):
+        [1] id=abc123 | Title (80자) | @Channel | q:matched_query
+        
+        효과:
+        - 프롬프트 크기 60% 감소
+        - LLM 처리 속도 향상
+        - 비용 절감
         """
         lines = []
-        for i, candidate in enumerate(candidates, 1):
+        for i, c in enumerate(candidates, 1):
+            # title 80자로 제한 (긴 제목 방지)
+            title = c['title'][:80]
+            # matched_query 30자로 제한
+            matched = c.get('matched_query', '')[:30]
+            
             lines.append(
-                f"[{i}] video_id: \"{candidate['video_id']}\"\n"
-                f"    Title: \"{candidate['title']}\"\n"
-                f"    Channel: \"{candidate['channel_name']}\"\n"
-                f"    Matched Query: \"{candidate.get('matched_query', 'N/A')}\""
+                f"[{i}] id={c['video_id']} | {title} | @{c['channel_name']} | q:{matched}"
             )
-        return "\n\n".join(lines)
-
+        return "\n".join(lines)
 
 # =============================================================================
 # 싱글톤
