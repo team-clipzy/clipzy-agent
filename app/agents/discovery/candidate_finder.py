@@ -48,7 +48,7 @@ class CandidateFinderService:
     async def find_candidates(
         self,
         queries: list[str],
-        max_results_per_query: int = 10,
+        max_results_per_query: int = 6,
         force_refresh: bool = False,
     ) -> dict[str, Any]:
         """
