@@ -589,3 +589,116 @@ async def visualize_agent_graph() -> dict:
     except Exception as e:
         logger.error(f"❌ 그래프 시각화 실패: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================================================
+# 옵션 A: Spring 통합용 완전한 AI 추천 API (Phase 7)
+# ============================================================================
+
+from app.schemas.spring_integration import (
+    FullRecommendedVideo,
+    FullRecommendRequest,
+    FullRecommendResponse,
+)
+
+@router.post(
+    "/recommend-full",
+    response_model=FullRecommendResponse,
+    summary="Spring 통합용 완전한 AI 추천 (옵션 A)",
+)
+async def recommend_full_for_spring(
+    request: FullRecommendRequest,
+) -> FullRecommendResponse:
+    """
+    Spring 서버가 호출하는 완전한 AI 추천 API
+
+    Rule-based 완전 대체:
+    - Spring은 UserPreference와 시청 이력만 전달
+    - FastAPI가 모든 추천 로직 담당
+    - AI Agent가 YouTube 실시간 검색 + 개인화
+    """
+    import time
+    start_time = time.time()
+
+    try:
+        logger.info(
+            f"Recommend-Full 시작: user_id={request.userId}, "
+            f"excluded={len(request.excludedVideoIds)}, "
+            f"weaknesses={len(request.weaknesses)}, "
+            f"collected={len(request.collectedWords)}"
+        )
+
+        # 초기 상태 생성 (Spring 데이터 포함)
+        weaknesses_dict = [w.model_dump() for w in request.weaknesses]
+        weak_words_dict = [w.model_dump() for w in request.weakWords]
+        collected_words_dict = [w.model_dump() for w in request.collectedWords]
+
+        initial_state = create_initial_state(
+            user_id=request.userId,
+            max_videos_per_query=10,
+            force_refresh=False,
+            excluded_video_ids=request.excludedVideoIds,
+            external_weaknesses=weaknesses_dict,
+            external_weak_words=weak_words_dict,
+            external_collected_words=collected_words_dict,
+            use_external_data=True,
+        )
+
+        # 메타데이터 초기 설정
+        initial_state["metadata"] = {
+            "learning_goal": request.learningGoal,
+            "absolute_level": request.absoluteLevel,
+        }
+
+        # LangGraph Agent 실행
+        agent = get_discovery_agent()
+        final_state = await agent.ainvoke(initial_state)
+
+        logger.info(
+            f"Recommend-Full 완료: "
+            f"품질={final_state['quality_score']:.2f}, "
+            f"재시도={final_state['retry_count']}회, "
+            f"제외={final_state['excluded_count']}개"
+        )
+
+        # 응답 조립
+        recommendations = []
+        for rec in final_state["recommendations"]:
+            relevance_score = 100.0 - (rec["rank"] - 1) * 10.0
+
+            recommendations.append(FullRecommendedVideo(
+                videoId=rec["video_id"],
+                rank=rec["rank"],
+                reason=rec["reason"],
+                relevanceScore=relevance_score,
+                title=rec["title"],
+                channelId=rec["channel_id"],
+                channelName=rec["channel_name"],
+                thumbnailUrl=rec["thumbnail_url"],
+                description=rec.get("description", ""),
+                publishedAt=rec.get("published_at", ""),
+            ))
+
+        processing_time_ms = int((time.time() - start_time) * 1000)
+        total_tokens = (
+            final_state["tokens_used_query"] +
+            final_state["tokens_used_rerank"]
+        )
+
+        return FullRecommendResponse(
+            recommendations=recommendations,
+            strategy=final_state["overall_strategy"],
+            totalCandidates=len(final_state["candidates"]),
+            excludedCount=final_state["excluded_count"],
+            processingTimeMs=processing_time_ms,
+            tokensUsed=total_tokens,
+            qualityScore=final_state["quality_score"],
+            retryCount=final_state["retry_count"],
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Recommend-Full 실패: user_id={request.userId}, error={e}"
+        )
+        raise HTTPException(status_code=500, detail=str(e))
