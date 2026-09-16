@@ -123,9 +123,9 @@ class RerankerService:
             max_tokens=1500,
         )
 
-        # ─────────────────────────────────────────────────────────────
+        # ─────────────────────────────────────────────────────────
         # 응답 파싱 & 검증
-        # ─────────────────────────────────────────────────────────────
+        # ─────────────────────────────────────────────────────────
         
         raw_content = response.choices[0].message.content
         if not raw_content:
@@ -137,20 +137,72 @@ class RerankerService:
         except json.JSONDecodeError as e:
             logger.error(f"JSON 파싱 실패: {raw_content}")
             raise ValueError(f"LLM 응답이 유효한 JSON이 아닙니다: {e}") from e
-
-        # ─────────────────────────────────────────────────────────────
-        # video_id 검증 (환각 방지)
-        # ─────────────────────────────────────────────────────────────
-        # LLM이 존재하지 않는 video_id를 지어낼 수 있음
-        # → 후보 리스트에 있는 것만 허용
         
+        # ─────────────────────────────────────────────────────────
+        # video_id 검증 (환각 방지) - 개선 버전
+        # ─────────────────────────────────────────────────────────
+        # LLM이 환각을 일으키면 해당 항목만 스킵하고 원본에서 채움
+        
+        # ⭐ 후보 video_id 집합 (빠른 검색용)
         candidate_ids = {c["video_id"] for c in candidates}
+        
+        valid_recommendations = []
+        hallucination_count = 0
+
         for rec in result.recommendations:
-            if rec.video_id not in candidate_ids:
-                logger.error(f"❌ LLM 환각 감지: video_id={rec.video_id}")
-                raise ValueError(
-                    f"LLM이 존재하지 않는 video_id를 반환: {rec.video_id}"
-                )
+            if rec.video_id in candidate_ids:
+                valid_recommendations.append(rec)
+            else:
+                hallucination_count += 1
+                # video_id가 매우 길면 자르기 (title이 들어왔을 가능성)
+                display_id = str(rec.video_id)[:50]
+                logger.warning(f"⚠️ LLM 환각 감지 (스킵): video_id={display_id}")
+
+        # 부족하면 원본 candidates에서 채우기
+        if len(valid_recommendations) < 6:
+            logger.warning(
+                f"⚠️ 유효 추천 {len(valid_recommendations)}개 (환각 {hallucination_count}개), "
+                f"원본 후보로 보충 시작"
+            )
+            
+            # 이미 선택된 video_id
+            used_ids = {r.video_id for r in valid_recommendations}
+            
+            # RankedVideo 임포트
+            from app.schemas.recommendation import RankedVideo
+            
+            # 원본 후보에서 아직 사용 안 된 것 추가
+            next_rank = len(valid_recommendations) + 1
+            for candidate in candidates:
+                if candidate["video_id"] not in used_ids:
+                    valid_recommendations.append(RankedVideo(
+                        video_id=candidate["video_id"],
+                        rank=next_rank,
+                        reason=f"{absolute_level} 수준에 적합한 학습 영상입니다.",
+                    ))
+                    used_ids.add(candidate["video_id"])
+                    next_rank += 1
+                    
+                    if len(valid_recommendations) >= 6:
+                        break
+
+        # 최종 6개 이상 확보되었는지 확인
+        if len(valid_recommendations) < 6:
+            logger.error(f"❌ 최종 추천 부족: {len(valid_recommendations)}개")
+            raise ValueError(f"충분한 추천 영상 확보 실패: {len(valid_recommendations)}개")
+
+        # rank 재정렬 (1부터 순차)
+        for i, rec in enumerate(valid_recommendations[:6], 1):
+            rec.rank = i
+
+        # result 업데이트 (6개로 제한)
+        result.recommendations = valid_recommendations[:6]
+
+        if hallucination_count > 0:
+            logger.info(
+                f"✨ 환각 대응 완료: 유효={len(valid_recommendations) - hallucination_count}, "
+                f"환각={hallucination_count}, 보충={hallucination_count}, 최종=6개"
+            )
 
         tokens_used = response.usage.total_tokens
 
