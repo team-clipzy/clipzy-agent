@@ -2,6 +2,38 @@ version: '3.8'
 
 services:
   # =============================================
+  # FastAPI - AI Recommendation Server
+  # =============================================
+  # 역할:
+  # - LangGraph 기반 AI 추천 Agent
+  # - YouTube 실시간 검색
+  # - LLM 개인화 (GPT-4o-mini)
+  # - Spring 서버와 통신
+  fastapi:
+    build: .
+    container_name: clipzy-fastapi
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # Docker 네트워크 내부 통신용 오버라이드
+      - REDIS_URL=redis://redis:6379/0
+      - QDRANT_URL=http://qdrant:6333
+    depends_on:
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # =============================================
   # Qdrant - Vector DB
   # =============================================
   qdrant:
